@@ -39,17 +39,6 @@ output "frontend_url" {
   value       = module.ecs.frontend_url
 }
 
-output "backend_url" {
-  description = "URL of the backend API"
-  value       = module.ecs.backend_url
-}
-
-
-output "frontend_service_name" {
-  description = "Frontend ECS service name"
-  value       = module.ecs.frontend_service_name
-}
-
 output "backend_service_name" {
   description = "Backend ECS service name"
   value       = module.ecs.backend_service_name
