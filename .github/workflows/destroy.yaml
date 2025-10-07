@@ -54,15 +54,15 @@ jobs:
         cd terraform
         terraform destroy -auto-approve
 
-    - name: Cleanup ECR images
+    - name: Cleanup ECR repositories
       run: |
-        # Clean up old images (keep only latest)
-        aws ecr list-images --repository-name ${{ env.PROJECT_NAME }}-frontend --query 'imageIds[?imageTag!=`latest`]' --output text | \
-        while read imageDigest; do
-          aws ecr batch-delete-image --repository-name ${{ env.PROJECT_NAME }}-frontend --image-ids imageDigest=$imageDigest
-        done || true
+        # Delete ECR repositories
+        aws ecr delete-repository \
+          --repository-name ${{ env.PROJECT_NAME }}-frontend \
+          --force \
+          --region ${{ env.AWS_REGION }} || true
         
-        aws ecr list-images --repository-name ${{ env.PROJECT_NAME }}-backend --query 'imageIds[?imageTag!=`latest`]' --output text | \
-        while read imageDigest; do
-          aws ecr batch-delete-image --repository-name ${{ env.PROJECT_NAME }}-backend --image-ids imageDigest=$imageDigest
-        done || true
+        aws ecr delete-repository \
+          --repository-name ${{ env.PROJECT_NAME }}-backend \
+          --force \
+          --region ${{ env.AWS_REGION }} || true
