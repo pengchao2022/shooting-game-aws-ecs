@@ -169,7 +169,7 @@ resource "aws_lb_target_group" "frontend" {
 resource "aws_lb_listener" "backend" {
   load_balancer_arn = aws_lb.backend.arn
   port              = "8000"
-  protocol          = "TCP"
+  protocol          = "HTTP"
 
   default_action {
     type             = "forward"
