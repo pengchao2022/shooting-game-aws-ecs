@@ -56,8 +56,8 @@ jobs:
       id: infrastructure-outputs
       run: |
         cd terraform
-        echo "ecr_frontend_url=$(terraform output -raw ecr_frontend_repository_url)" >> $GITHUB_OUTPUT
-        echo "ecr_backend_url=$(terraform output -raw ecr_backend_repository_url)" >> $GITHUB_OUTPUT
+        echo "ecr_frontend_repository_url=$(terraform output -raw ecr_frontend_repository_url)" >> $GITHUB_OUTPUT
+        echo "ecr_backend_repository_url=$(terraform output -raw ecr_backend_repository_url)" >> $GITHUB_OUTPUT
         echo "ecs_cluster_name=$(terraform output -raw ecs_cluster_name)" >> $GITHUB_OUTPUT
         echo "frontend_service_name=$(terraform output -raw frontend_service_name)" >> $GITHUB_OUTPUT
         echo "backend_service_name=$(terraform output -raw backend_service_name)" >> $GITHUB_OUTPUT
@@ -86,24 +86,28 @@ jobs:
     - name: Build and push frontend image
       run: |
         cd frontend
-        docker build -t ${{ needs.terraform-infrastructure.outputs.ecr_frontend_url }}:${{ github.sha }} .
-        docker push ${{ needs.terraform-infrastructure.outputs.ecr_frontend_url }}:${{ github.sha }}
+        echo "Building frontend image: ${{ needs.terraform-infrastructure.outputs.ecr_frontend_repository_url }}:${{ github.sha }}"
+        docker build -t ${{ needs.terraform-infrastructure.outputs.ecr_frontend_repository_url }}:${{ github.sha }} .
+        docker push ${{ needs.terraform-infrastructure.outputs.ecr_frontend_repository_url }}:${{ github.sha }}
 
     - name: Build and push backend image
       run: |
         cd backend
-        docker build -t ${{ needs.terraform-infrastructure.outputs.ecr_backend_url }}:${{ github.sha }} .
-        docker push ${{ needs.terraform-infrastructure.outputs.ecr_backend_url }}:${{ github.sha }}
+        echo "Building backend image: ${{ needs.terraform-infrastructure.outputs.ecr_backend_repository_url }}:${{ github.sha }}"
+        docker build -t ${{ needs.terraform-infrastructure.outputs.ecr_backend_repository_url }}:${{ github.sha }} .
+        docker push ${{ needs.terraform-infrastructure.outputs.ecr_backend_repository_url }}:${{ github.sha }}
 
     - name: Update ECS services with new images
       run: |
         # Update frontend service
+        echo "Updating frontend service: ${{ needs.terraform-infrastructure.outputs.frontend_service_name }}"
         aws ecs update-service \
           --cluster ${{ needs.terraform-infrastructure.outputs.ecs_cluster_name }} \
           --service ${{ needs.terraform-infrastructure.outputs.frontend_service_name }} \
           --force-new-deployment
 
         # Update backend service
+        echo "Updating backend service: ${{ needs.terraform-infrastructure.outputs.backend_service_name }}"
         aws ecs update-service \
           --cluster ${{ needs.terraform-infrastructure.outputs.ecs_cluster_name }} \
           --service ${{ needs.terraform-infrastructure.outputs.backend_service_name }} \
@@ -115,12 +119,14 @@ jobs:
         sleep 60
         
         # Wait for frontend service
+        echo "Waiting for frontend service to stabilize..."
         aws ecs wait services-stable \
           --cluster ${{ needs.terraform-infrastructure.outputs.ecs_cluster_name }} \
           --service ${{ needs.terraform-infrastructure.outputs.frontend_service_name }} \
           --region ${{ env.AWS_REGION }} || echo "Frontend service stabilization check completed"
         
         # Wait for backend service
+        echo "Waiting for backend service to stabilize..."
         aws ecs wait services-stable \
           --cluster ${{ needs.terraform-infrastructure.outputs.ecs_cluster_name }} \
           --service ${{ needs.terraform-infrastructure.outputs.backend_service_name }} \
@@ -131,5 +137,5 @@ jobs:
         echo "🚀 Deployment completed successfully!"
         echo "Frontend URL: ${{ needs.terraform-infrastructure.outputs.frontend_url }}"
         echo "Backend URL: ${{ needs.terraform-infrastructure.outputs.backend_url }}"
-        echo "Frontend ECR: ${{ needs.terraform-infrastructure.outputs.ecr_frontend_url }}"
-        echo "Backend ECR: ${{ needs.terraform-infrastructure.outputs.ecr_backend_url }}"
+        echo "Frontend ECR: ${{ needs.terraform-infrastructure.outputs.ecr_frontend_repository_url }}"
+        echo "Backend ECR: ${{ needs.terraform-infrastructure.outputs.ecr_backend_repository_url }}"
