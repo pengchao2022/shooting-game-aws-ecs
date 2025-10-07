@@ -53,9 +53,9 @@ jobs:
         # Update database credentials
         sed -i "s|db_username = \".*\"|db_username = \"${{ secrets.DB_USERNAME }}\"|" terraform.tfvars
         sed -i "s|db_password = \".*\"|db_password = \"${{ secrets.DB_PASSWORD }}\"|" terraform.tfvars
-        # Use dummy images for initial infrastructure creation
-        sed -i "s|frontend_image = \".*\"|frontend_image = \"nginx:alpine\"|" terraform.tfvars
-        sed -i "s|backend_image = \".*\"|backend_image = \"nginx:alpine\"|" terraform.tfvars
+        # Use ECR images for infrastructure creation
+        sed -i "s|frontend_image = \".*\"|frontend_image = \"${{ steps.get-account-id.outputs.account_id }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.PROJECT_NAME }}-frontend:latest\"|" terraform.tfvars
+        sed -i "s|backend_image = \".*\"|backend_image = \"${{ steps.get-account-id.outputs.account_id }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.PROJECT_NAME }}-backend:latest\"|" terraform.tfvars
 
     - name: Terraform Plan
       run: |
@@ -72,7 +72,6 @@ jobs:
       run: |
         cd terraform
         
-        # 直接从 Terraform 输出获取值
         ECR_FRONTEND=$(terraform output -raw ecr_frontend_repository_url)
         ECR_BACKEND=$(terraform output -raw ecr_backend_repository_url)
         ECS_CLUSTER=$(terraform output -raw ecs_cluster_name)
@@ -88,13 +87,9 @@ jobs:
         echo "backend_service_name=$BACKEND_SERVICE" >> $GITHUB_OUTPUT
         echo "frontend_url=$FRONTEND_URL" >> $GITHUB_OUTPUT
         echo "backend_url=$BACKEND_URL" >> $GITHUB_OUTPUT
-        
-        echo "Outputs set:"
-        echo "ECR Frontend: $ECR_FRONTEND"
-        echo "ECR Backend: $ECR_BACKEND"
 
   deploy-applications:
-    name: Deploy Applications to ECS
+    name: Build and Push Images
     runs-on: ubuntu-latest
     needs: terraform-infrastructure
     
@@ -109,82 +104,62 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
-    - name: Debug all outputs
-      run: |
-        echo "=== All Outputs from Terraform Job ==="
-        echo "ecr_frontend_url: '${{ needs.terraform-infrastructure.outputs.ecr_frontend_url }}'"
-        echo "ecr_backend_url: '${{ needs.terraform-infrastructure.outputs.ecr_backend_url }}'"
-        echo "ecs_cluster_name: '${{ needs.terraform-infrastructure.outputs.ecs_cluster_name }}'"
-        echo "frontend_service_name: '${{ needs.terraform-infrastructure.outputs.frontend_service_name }}'"
-        echo "backend_service_name: '${{ needs.terraform-infrastructure.outputs.backend_service_name }}'"
-        echo "frontend_url: '${{ needs.terraform-infrastructure.outputs.frontend_url }}'"
-        echo "backend_url: '${{ needs.terraform-infrastructure.outputs.backend_url }}'"
-
-    - name: Verify ECR URLs are not empty
-      run: |
-        if [ -z "${{ needs.terraform-infrastructure.outputs.ecr_frontend_url }}" ]; then
-          echo "❌ ERROR: ecr_frontend_url is empty!"
-          exit 1
-        fi
-        if [ -z "${{ needs.terraform-infrastructure.outputs.ecr_backend_url }}" ]; then
-          echo "❌ ERROR: ecr_backend_url is empty!"
-          exit 1
-        fi
-        echo "✅ ECR URLs are not empty"
-
     - name: Login to ECR
       uses: aws-actions/amazon-ecr-login@v2
 
     - name: Build and push frontend image
       run: |
         cd frontend
-        IMAGE_TAG="${{ needs.terraform-infrastructure.outputs.ecr_frontend_url }}:${{ github.sha }}"
-        echo "Building frontend image: $IMAGE_TAG"
-        docker build -t $IMAGE_TAG .
-        docker push $IMAGE_TAG
+        # 构建并推送带 commit hash 的镜像
+        docker build -t ${{ needs.terraform-infrastructure.outputs.ecr_frontend_url }}:${{ github.sha }} .
+        docker push ${{ needs.terraform-infrastructure.outputs.ecr_frontend_url }}:${{ github.sha }}
+        
+        # 同时推送 latest 标签
+        docker tag ${{ needs.terraform-infrastructure.outputs.ecr_frontend_url }}:${{ github.sha }} ${{ needs.terraform-infrastructure.outputs.ecr_frontend_url }}:latest
+        docker push ${{ needs.terraform-infrastructure.outputs.ecr_frontend_url }}:latest
 
     - name: Build and push backend image
       run: |
         cd backend
-        IMAGE_TAG="${{ needs.terraform-infrastructure.outputs.ecr_backend_url }}:${{ github.sha }}"
-        echo "Building backend image: $IMAGE_TAG"
-        docker build -t $IMAGE_TAG .
-        docker push $IMAGE_TAG
+        # 构建并推送带 commit hash 的镜像
+        docker build -t ${{ needs.terraform-infrastructure.outputs.ecr_backend_url }}:${{ github.sha }} .
+        docker push ${{ needs.terraform-infrastructure.outputs.ecr_backend_url }}:${{ github.sha }}
+        
+        # 同时推送 latest 标签
+        docker tag ${{ needs.terraform-infrastructure.outputs.ecr_backend_url }}:${{ github.sha }} ${{ needs.terraform-infrastructure.outputs.ecr_backend_url }}:latest
+        docker push ${{ needs.terraform-infrastructure.outputs.ecr_backend_url }}:latest
 
-    - name: Update ECS services with new images
+    - name: Update ECS services
       run: |
-        # Update frontend service
-        echo "Updating frontend service: ${{ needs.terraform-infrastructure.outputs.frontend_service_name }}"
+        # 强制重新部署前端服务（使用新的 latest 镜像）
         aws ecs update-service \
           --cluster ${{ needs.terraform-infrastructure.outputs.ecs_cluster_name }} \
           --service ${{ needs.terraform-infrastructure.outputs.frontend_service_name }} \
-          --force-new-deployment
+          --force-new-deployment \
+          --region ${{ env.AWS_REGION }}
 
-        # Update backend service
-        echo "Updating backend service: ${{ needs.terraform-infrastructure.outputs.backend_service_name }}"
+        # 强制重新部署后端服务（使用新的 latest 镜像）
         aws ecs update-service \
           --cluster ${{ needs.terraform-infrastructure.outputs.ecs_cluster_name }} \
           --service ${{ needs.terraform-infrastructure.outputs.backend_service_name }} \
-          --force-new-deployment
+          --force-new-deployment \
+          --region ${{ env.AWS_REGION }}
 
     - name: Wait for services to stabilize
       run: |
         echo "Waiting for ECS services to stabilize..."
         sleep 60
         
-        # Wait for frontend service
-        echo "Waiting for frontend service to stabilize..."
+        # 等待服务稳定
         aws ecs wait services-stable \
           --cluster ${{ needs.terraform-infrastructure.outputs.ecs_cluster_name }} \
           --service ${{ needs.terraform-infrastructure.outputs.frontend_service_name }} \
-          --region ${{ env.AWS_REGION }} || echo "Frontend service stabilization check completed"
+          --region ${{ env.AWS_REGION }} || echo "Frontend service check completed"
         
-        # Wait for backend service
-        echo "Waiting for backend service to stabilize..."
         aws ecs wait services-stable \
           --cluster ${{ needs.terraform-infrastructure.outputs.ecs_cluster_name }} \
           --service ${{ needs.terraform-infrastructure.outputs.backend_service_name }} \
-          --region ${{ env.AWS_REGION }} || echo "Backend service stabilization check completed"
+          --region ${{ env.AWS_REGION }} || echo "Backend service check completed"
 
     - name: Show deployment results
       run: |
