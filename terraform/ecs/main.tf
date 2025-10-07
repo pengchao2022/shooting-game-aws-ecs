@@ -128,13 +128,18 @@ resource "aws_lb" "frontend" {
 resource "aws_lb_target_group" "backend" {
   name        = "${var.project_name}-backend-tg"
   port        = 8000
-  protocol    = "TCP"
+  protocol    = "HTTP" # 修改为 HTTP 协议
   vpc_id      = var.vpc_id
   target_type = "ip"
 
   health_check {
-    enabled  = true
-    protocol = "TCP"
+    enabled             = true
+    protocol            = "HTTP"    # 使用 HTTP 协议
+    path                = "/health" # 假设后端应用提供 /health 路径
+    interval            = 30
+    timeout             = 10
+    healthy_threshold   = 3
+    unhealthy_threshold = 3
   }
 
   tags = {
