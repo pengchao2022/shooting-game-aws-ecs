@@ -13,6 +13,15 @@ jobs:
     name: Terraform Create Infrastructure
     runs-on: ubuntu-latest
     
+    outputs:
+      ecr_frontend_url: ${{ steps.set-outputs.outputs.ecr_frontend_url }}
+      ecr_backend_url: ${{ steps.set-outputs.outputs.ecr_backend_url }}
+      ecs_cluster_name: ${{ steps.set-outputs.outputs.ecs_cluster_name }}
+      frontend_service_name: ${{ steps.set-outputs.outputs.frontend_service_name }}
+      backend_service_name: ${{ steps.set-outputs.outputs.backend_service_name }}
+      frontend_url: ${{ steps.set-outputs.outputs.frontend_url }}
+      backend_url: ${{ steps.set-outputs.outputs.backend_url }}
+    
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -23,6 +32,12 @@ jobs:
         aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
+
+    - name: Get AWS Account ID
+      id: get-account-id
+      run: |
+        ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+        echo "account_id=$ACCOUNT_ID" >> $GITHUB_OUTPUT
 
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v3
@@ -52,17 +67,31 @@ jobs:
         cd terraform
         terraform apply -auto-approve tfplan
 
-    - name: Get infrastructure outputs
-      id: infrastructure-outputs
+    - name: Set job outputs
+      id: set-outputs
       run: |
         cd terraform
-        echo "ecr_frontend_repository_url=$(terraform output -raw ecr_frontend_repository_url)" >> $GITHUB_OUTPUT
-        echo "ecr_backend_repository_url=$(terraform output -raw ecr_backend_repository_url)" >> $GITHUB_OUTPUT
-        echo "ecs_cluster_name=$(terraform output -raw ecs_cluster_name)" >> $GITHUB_OUTPUT
-        echo "frontend_service_name=$(terraform output -raw frontend_service_name)" >> $GITHUB_OUTPUT
-        echo "backend_service_name=$(terraform output -raw backend_service_name)" >> $GITHUB_OUTPUT
-        echo "frontend_url=$(terraform output -raw frontend_url)" >> $GITHUB_OUTPUT
-        echo "backend_url=$(terraform output -raw backend_url)" >> $GITHUB_OUTPUT
+        
+        # 直接从 Terraform 输出获取值
+        ECR_FRONTEND=$(terraform output -raw ecr_frontend_repository_url)
+        ECR_BACKEND=$(terraform output -raw ecr_backend_repository_url)
+        ECS_CLUSTER=$(terraform output -raw ecs_cluster_name)
+        FRONTEND_SERVICE=$(terraform output -raw frontend_service_name)
+        BACKEND_SERVICE=$(terraform output -raw backend_service_name)
+        FRONTEND_URL=$(terraform output -raw frontend_url)
+        BACKEND_URL=$(terraform output -raw backend_url)
+        
+        echo "ecr_frontend_url=$ECR_FRONTEND" >> $GITHUB_OUTPUT
+        echo "ecr_backend_url=$ECR_BACKEND" >> $GITHUB_OUTPUT
+        echo "ecs_cluster_name=$ECS_CLUSTER" >> $GITHUB_OUTPUT
+        echo "frontend_service_name=$FRONTEND_SERVICE" >> $GITHUB_OUTPUT
+        echo "backend_service_name=$BACKEND_SERVICE" >> $GITHUB_OUTPUT
+        echo "frontend_url=$FRONTEND_URL" >> $GITHUB_OUTPUT
+        echo "backend_url=$BACKEND_URL" >> $GITHUB_OUTPUT
+        
+        echo "Outputs set:"
+        echo "ECR Frontend: $ECR_FRONTEND"
+        echo "ECR Backend: $ECR_BACKEND"
 
   deploy-applications:
     name: Deploy Applications to ECS
@@ -80,14 +109,28 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
-    - name: Debug outputs from previous job
+    - name: Debug all outputs
       run: |
-        echo "=== Debug Outputs from Terraform Job ==="
-        echo "ecr_frontend_repository_url: ${{ needs.terraform-infrastructure.outputs.ecr_frontend_repository_url }}"
-        echo "ecr_backend_repository_url: ${{ needs.terraform-infrastructure.outputs.ecr_backend_repository_url }}"
-        echo "ecs_cluster_name: ${{ needs.terraform-infrastructure.outputs.ecs_cluster_name }}"
-        echo "frontend_service_name: ${{ needs.terraform-infrastructure.outputs.frontend_service_name }}"
-        echo "backend_service_name: ${{ needs.terraform-infrastructure.outputs.backend_service_name }}"
+        echo "=== All Outputs from Terraform Job ==="
+        echo "ecr_frontend_url: '${{ needs.terraform-infrastructure.outputs.ecr_frontend_url }}'"
+        echo "ecr_backend_url: '${{ needs.terraform-infrastructure.outputs.ecr_backend_url }}'"
+        echo "ecs_cluster_name: '${{ needs.terraform-infrastructure.outputs.ecs_cluster_name }}'"
+        echo "frontend_service_name: '${{ needs.terraform-infrastructure.outputs.frontend_service_name }}'"
+        echo "backend_service_name: '${{ needs.terraform-infrastructure.outputs.backend_service_name }}'"
+        echo "frontend_url: '${{ needs.terraform-infrastructure.outputs.frontend_url }}'"
+        echo "backend_url: '${{ needs.terraform-infrastructure.outputs.backend_url }}'"
+
+    - name: Verify ECR URLs are not empty
+      run: |
+        if [ -z "${{ needs.terraform-infrastructure.outputs.ecr_frontend_url }}" ]; then
+          echo "❌ ERROR: ecr_frontend_url is empty!"
+          exit 1
+        fi
+        if [ -z "${{ needs.terraform-infrastructure.outputs.ecr_backend_url }}" ]; then
+          echo "❌ ERROR: ecr_backend_url is empty!"
+          exit 1
+        fi
+        echo "✅ ECR URLs are not empty"
 
     - name: Login to ECR
       uses: aws-actions/amazon-ecr-login@v2
@@ -95,18 +138,18 @@ jobs:
     - name: Build and push frontend image
       run: |
         cd frontend
-        FULL_IMAGE_TAG="${{ needs.terraform-infrastructure.outputs.ecr_frontend_repository_url }}:${{ github.sha }}"
-        echo "Building frontend image: $FULL_IMAGE_TAG"
-        docker build -t $FULL_IMAGE_TAG .
-        docker push $FULL_IMAGE_TAG
+        IMAGE_TAG="${{ needs.terraform-infrastructure.outputs.ecr_frontend_url }}:${{ github.sha }}"
+        echo "Building frontend image: $IMAGE_TAG"
+        docker build -t $IMAGE_TAG .
+        docker push $IMAGE_TAG
 
     - name: Build and push backend image
       run: |
         cd backend
-        FULL_IMAGE_TAG="${{ needs.terraform-infrastructure.outputs.ecr_backend_repository_url }}:${{ github.sha }}"
-        echo "Building backend image: $FULL_IMAGE_TAG"
-        docker build -t $FULL_IMAGE_TAG .
-        docker push $FULL_IMAGE_TAG
+        IMAGE_TAG="${{ needs.terraform-infrastructure.outputs.ecr_backend_url }}:${{ github.sha }}"
+        echo "Building backend image: $IMAGE_TAG"
+        docker build -t $IMAGE_TAG .
+        docker push $IMAGE_TAG
 
     - name: Update ECS services with new images
       run: |
@@ -148,5 +191,3 @@ jobs:
         echo "🚀 Deployment completed successfully!"
         echo "Frontend URL: ${{ needs.terraform-infrastructure.outputs.frontend_url }}"
         echo "Backend URL: ${{ needs.terraform-infrastructure.outputs.backend_url }}"
-        echo "Frontend ECR: ${{ needs.terraform-infrastructure.outputs.ecr_frontend_repository_url }}"
-        echo "Backend ECR: ${{ needs.terraform-infrastructure.outputs.ecr_backend_repository_url }}"
