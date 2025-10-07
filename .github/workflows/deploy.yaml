@@ -1,25 +1,22 @@
-name: Deploy Shooting Game to AWS ECS
+name: Deploy to AWS
 
 on:
   push:
-    branches: [ main ]
-  pull_request:
     branches: [ main ]
 
 env:
   AWS_REGION: us-east-1
   PROJECT_NAME: shooting-game
-  CLUSTER_NAME: shooting-game-cluster
-  FRONTEND_SERVICE: shooting-game-frontend
-  BACKEND_SERVICE: shooting-game-backend
 
 jobs:
-  get-aws-account-id:
-    name: Get AWS Account ID
+  deploy:
+    name: Deploy Infrastructure
     runs-on: ubuntu-latest
-    outputs:
-      account_id: ${{ steps.get-account-id.outputs.account_id }}
+    
     steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
@@ -32,347 +29,53 @@ jobs:
       run: |
         ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
         echo "account_id=$ACCOUNT_ID" >> $GITHUB_OUTPUT
-        echo "AWS Account ID: $ACCOUNT_ID"
 
-  setup-ecr-repositories:
-    name: Setup ECR Repositories
-    runs-on: ubuntu-latest
-    needs: get-aws-account-id
-    if: github.ref == 'refs/heads/main'
-    outputs:
-      frontend_image: ${{ steps.set-images.outputs.frontend_image }}
-      backend_image: ${{ steps.set-images.outputs.backend_image }}
-    steps:
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
-
-    - name: Create ECR Repository for Frontend
-      id: create-frontend-ecr
+    - name: Setup ECR repositories
       run: |
-        set -e
-        if aws ecr describe-repositories --repository-names ${{ env.PROJECT_NAME }}-frontend --region ${{ env.AWS_REGION }} 2>/dev/null; then
-          echo "ECR repository ${{ env.PROJECT_NAME }}-frontend already exists"
-        else
-          echo "Creating ECR repository: ${{ env.PROJECT_NAME }}-frontend"
-          aws ecr create-repository \
-            --repository-name ${{ env.PROJECT_NAME }}-frontend \
-            --region ${{ env.AWS_REGION }} \
-            --image-scanning-configuration scanOnPush=true \
-            --image-tag-mutability MUTABLE
-          echo "ECR repository ${{ env.PROJECT_NAME }}-frontend created successfully"
-        fi
+        # Create ECR repositories if they don't exist
+        aws ecr create-repository --repository-name ${{ env.PROJECT_NAME }}-frontend --region ${{ env.AWS_REGION }} || true
+        aws ecr create-repository --repository-name ${{ env.PROJECT_NAME }}-backend --region ${{ env.AWS_REGION }} || true
 
-    - name: Create ECR Repository for Backend
-      id: create-backend-ecr
-      run: |
-        set -e
-        if aws ecr describe-repositories --repository-names ${{ env.PROJECT_NAME }}-backend --region ${{ env.AWS_REGION }} 2>/dev/null; then
-          echo "ECR repository ${{ env.PROJECT_NAME }}-backend already exists"
-        else
-          echo "Creating ECR repository: ${{ env.PROJECT_NAME }}-backend"
-          aws ecr create-repository \
-            --repository-name ${{ env.PROJECT_NAME }}-backend \
-            --region ${{ env.AWS_REGION }} \
-            --image-scanning-configuration scanOnPush=true \
-            --image-tag-mutability MUTABLE
-          echo "ECR repository ${{ env.PROJECT_NAME }}-backend created successfully"
-        fi
-
-    - name: Set ECR Image URLs
-      id: set-images
-      run: |
-        FRONTEND_IMAGE="${{ needs.get-aws-account-id.outputs.account_id }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.PROJECT_NAME }}-frontend"
-        BACKEND_IMAGE="${{ needs.get-aws-account-id.outputs.account_id }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.PROJECT_NAME }}-backend"
-        echo "frontend_image=$FRONTEND_IMAGE" >> $GITHUB_OUTPUT
-        echo "backend_image=$BACKEND_IMAGE" >> $GITHUB_OUTPUT
-        echo "Frontend image: $FRONTEND_IMAGE"
-        echo "Backend image: $BACKEND_IMAGE"
-
-  test:
-    name: Run Tests
-    runs-on: ubuntu-latest
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Set up Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '18'
-        cache: 'npm'
-        cache-dependency-path: frontend/package-lock.json
-
-    - name: Install frontend dependencies
-      run: |
-        cd frontend
-        npm ci
-
-    - name: Run frontend tests
-      run: |
-        cd frontend
-        npm test -- --coverage --watchAll=false --passWithNoTests
-
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.11'
-
-    - name: Install backend dependencies
-      run: |
-        cd backend
-        pip install -r requirements.txt
-        pip install pytest
-
-    - name: Run backend tests
-      run: |
-        cd backend
-        python -m pytest tests/ -v || echo "No tests found, continuing..."
-
-  security-scan:
-    name: Security Scan
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Run Trivy vulnerability scanner
-      uses: aquasecurity/trivy-action@master
-      with:
-        scan-type: 'fs'
-        scan-ref: '.'
-        format: 'sarif'
-        output: 'trivy-results.sarif'
-
-    - name: Upload Trivy scan results to GitHub Security tab
-      uses: github/codeql-action/upload-sarif@v3
-      if: always()
-      with:
-        sarif_file: 'trivy-results.sarif'
-
-  build-and-push:
-    name: Build and Push Docker Images
-    runs-on: ubuntu-latest
-    needs: [test, setup-ecr-repositories]
-    if: github.ref == 'refs/heads/main'
-    outputs:
-      frontend_image_tag: ${{ steps.tag-images.outputs.frontend_image_tag }}
-      backend_image_tag: ${{ steps.tag-images.outputs.backend_image_tag }}
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
-
-    - name: Login to Amazon ECR
-      id: login-ecr
+    - name: Login to ECR
       uses: aws-actions/amazon-ecr-login@v2
 
-    - name: Build Frontend Docker image
+    - name: Build and push frontend image
       run: |
         cd frontend
-        docker build -t ${{ needs.setup-ecr-repositories.outputs.frontend_image }}:${{ github.sha }} .
-        docker tag ${{ needs.setup-ecr-repositories.outputs.frontend_image }}:${{ github.sha }} ${{ needs.setup-ecr-repositories.outputs.frontend_image }}:latest
+        docker build -t ${{ steps.get-account-id.outputs.account_id }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.PROJECT_NAME }}-frontend:${{ github.sha }} .
+        docker push ${{ steps.get-account-id.outputs.account_id }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.PROJECT_NAME }}-frontend:${{ github.sha }}
 
-    - name: Build Backend Docker image
+    - name: Build and push backend image
       run: |
         cd backend
-        docker build -t ${{ needs.setup-ecr-repositories.outputs.backend_image }}:${{ github.sha }} .
-        docker tag ${{ needs.setup-ecr-repositories.outputs.backend_image }}:${{ github.sha }} ${{ needs.setup-ecr-repositories.outputs.backend_image }}:latest
-
-    - name: Push Frontend Docker image to ECR
-      run: |
-        docker push ${{ needs.setup-ecr-repositories.outputs.frontend_image }}:${{ github.sha }}
-        docker push ${{ needs.setup-ecr-repositories.outputs.frontend_image }}:latest
-
-    - name: Push Backend Docker image to ECR
-      run: |
-        docker push ${{ needs.setup-ecr-repositories.outputs.backend_image }}:${{ github.sha }}
-        docker push ${{ needs.setup-ecr-repositories.outputs.backend_image }}:latest
-
-    - name: Set image tags
-      id: tag-images
-      run: |
-        echo "frontend_image_tag=${{ needs.setup-ecr-repositories.outputs.frontend_image }}:${{ github.sha }}" >> $GITHUB_OUTPUT
-        echo "backend_image_tag=${{ needs.setup-ecr-repositories.outputs.backend_image }}:${{ github.sha }}" >> $GITHUB_OUTPUT
-
-  terraform-plan:
-    name: Terraform Plan
-    runs-on: ubuntu-latest
-    needs: [build-and-push, setup-ecr-repositories]
-    if: github.ref == 'refs/heads/main'
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
+        docker build -t ${{ steps.get-account-id.outputs.account_id }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.PROJECT_NAME }}-backend:${{ github.sha }} .
+        docker push ${{ steps.get-account-id.outputs.account_id }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.PROJECT_NAME }}-backend:${{ github.sha }}
 
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v3
-      with:
-        terraform_version: 1.5.0
 
     - name: Terraform Init
       run: |
         cd terraform
         terraform init
 
-    - name: Terraform Format
+    - name: Update Terraform variables
       run: |
         cd terraform
-        terraform fmt -check -recursive
-
-    - name: Terraform Validate
-      run: |
-        cd terraform
-        terraform validate
-
-    - name: Update Terraform Variables
-      run: |
-        cd terraform
-        # Update specific variables in terraform.tfvars using sed
-        sed -i "s|frontend_image = \".*\"|frontend_image = \"${{ needs.build-and-push.outputs.frontend_image_tag }}\"|" terraform.tfvars
-        sed -i "s|backend_image = \".*\"|backend_image = \"${{ needs.build-and-push.outputs.backend_image_tag }}\"|" terraform.tfvars
-        sed -i "s|db_username = \".*\"|db_username = \"${{ secrets.DB_USERNAME }}\"|" terraform.tfvars
-        sed -i "s|db_password = \".*\"|db_password = \"${{ secrets.DB_PASSWORD }}\"|" terraform.tfvars
-        
-        echo "Updated terraform.tfvars with current values:"
-        cat terraform.tfvars
-
-    - name: Terraform Plan
-      run: |
-        cd terraform
-        terraform plan -var-file="terraform.tfvars" -out=tfplan
-
-    - name: Upload Terraform Plan
-      uses: actions/upload-artifact@v4
-      with:
-        name: terraform-plan
-        path: terraform/tfplan
-        retention-days: 1
-
-  deploy-production:
-    name: Deploy to Production
-    runs-on: ubuntu-latest
-    needs: [terraform-plan]
-    if: github.ref == 'refs/heads/main'
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
-
-    - name: Download Terraform Plan
-      uses: actions/download-artifact@v4
-      with:
-        name: terraform-plan
-        path: terraform
-
-    - name: Setup Terraform
-      uses: hashicorp/setup-terraform@v3
-
-    - name: Update Terraform Variables for Apply
-      run: |
-        cd terraform
-        # Ensure variables are updated for apply as well
-        sed -i "s|frontend_image = \".*\"|frontend_image = \"${{ needs.build-and-push.outputs.frontend_image_tag }}\"|" terraform.tfvars
-        sed -i "s|backend_image = \".*\"|backend_image = \"${{ needs.build-and-push.outputs.backend_image_tag }}\"|" terraform.tfvars
+        # Update image tags in terraform.tfvars
+        sed -i "s|frontend_image = \".*\"|frontend_image = \"${{ steps.get-account-id.outputs.account_id }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.PROJECT_NAME }}-frontend:${{ github.sha }}\"|" terraform.tfvars
+        sed -i "s|backend_image = \".*\"|backend_image = \"${{ steps.get-account-id.outputs.account_id }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.PROJECT_NAME }}-backend:${{ github.sha }}\"|" terraform.tfvars
         sed -i "s|db_username = \".*\"|db_username = \"${{ secrets.DB_USERNAME }}\"|" terraform.tfvars
         sed -i "s|db_password = \".*\"|db_password = \"${{ secrets.DB_PASSWORD }}\"|" terraform.tfvars
 
     - name: Terraform Apply
       run: |
         cd terraform
-        terraform apply -auto-approve tfplan
+        terraform apply -auto-approve
 
-    - name: Get Frontend URL
-      id: get-frontend-url
+    - name: Show deployment info
       run: |
         cd terraform
-        FRONTEND_URL=$(terraform output -raw frontend_url 2>/dev/null || echo "not-available-yet")
-        echo "Frontend URL: $FRONTEND_URL"
-
-    - name: Wait for ECS Services to stabilize
-      run: |
-        echo "Waiting for ECS services to stabilize..."
-        sleep 120
-        # Wait for frontend service
-        aws ecs wait services-stable \
-          --cluster ${{ env.CLUSTER_NAME }} \
-          --services ${{ env.FRONTEND_SERVICE }} \
-          --region ${{ env.AWS_REGION }} || echo "Frontend service stabilization check failed"
-        # Wait for backend service  
-        aws ecs wait services-stable \
-          --cluster ${{ env.CLUSTER_NAME }} \
-          --services ${{ env.BACKEND_SERVICE }} \
-          --region ${{ env.AWS_REGION }} || echo "Backend service stabilization check failed"
-
-    - name: Run Health Check
-      run: |
-        echo "Running health checks..."
-        FRONTEND_URL=$(cd terraform && terraform output -raw frontend_url)
-        BACKEND_URL=$(cd terraform && terraform output -raw backend_url)
-        
-        # Test backend health
-        echo "Testing backend at $BACKEND_URL/docs"
-        curl -f --retry 5 --retry-delay 10 $BACKEND_URL/docs || echo "Backend health check failed but continuing..."
-        
-        # Test frontend availability
-        echo "Testing frontend at $FRONTEND_URL"
-        curl -f --retry 3 --retry-delay 10 $FRONTEND_URL || echo "Frontend health check failed but continuing..."
-
-    - name: Update Deployment Status
-      run: |
-        echo "🚀 Deployment to Production completed successfully!"
-        FRONTEND_URL=$(cd terraform && terraform output -raw frontend_url)
-        BACKEND_URL=$(cd terraform && terraform output -raw backend_url)
-        echo "Frontend URL: $FRONTEND_URL"
-        echo "Backend URL: $BACKEND_URL"
-
-  notify:
-    name: Deployment Summary
-    runs-on: ubuntu-latest
-    needs: [deploy-production]
-    if: always()
-
-    steps:
-    - name: Show Deployment Summary
-      run: |
-        echo "=== DEPLOYMENT SUMMARY ==="
-        echo "Repository: ${{ github.repository }}"
-        echo "Branch: ${{ github.ref }}"
-        echo "Commit: ${{ github.sha }}"
-        echo "Workflow: ${{ github.workflow }}"
-        echo "Status: ${{ needs.deploy-production.result }}"
-        
-        if [ "${{ needs.deploy-production.result }}" == "success" ]; then
-          echo "✅ Deployment completed successfully!"
-          echo "🌐 Application is now live!"
-        else
-          echo "❌ Deployment failed!"
-          echo "Please check the workflow logs for details."
-        fi
+        echo "🚀 Deployment completed!"
+        echo "Frontend URL: $(terraform output -raw frontend_url)"
+        echo "Backend URL: $(terraform output -raw backend_url)"

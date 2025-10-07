@@ -1,17 +1,10 @@
-name: Destroy Shooting Game Infrastructure
+name: Destroy Infrastructure
 
 on:
   workflow_dispatch:
     inputs:
-      environment:
-        description: 'Environment to destroy'
-        required: true
-        default: 'production'
-        type: choice
-        options:
-        - production
       confirm_destroy:
-        description: 'Type "DESTROY" to confirm destruction'
+        description: 'Type "DESTROY" to confirm'
         required: true
         type: string
 
@@ -20,49 +13,18 @@ env:
   PROJECT_NAME: shooting-game
 
 jobs:
-  get-aws-account-id:
-    name: Get AWS Account ID
+  destroy:
+    name: Destroy Infrastructure
     runs-on: ubuntu-latest
-    outputs:
-      account_id: ${{ steps.get-account-id.outputs.account_id }}
-    steps:
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ env.AWS_REGION }}
-
-    - name: Get AWS Account ID
-      id: get-account-id
-      run: |
-        ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-        echo "account_id=$ACCOUNT_ID" >> $GITHUB_OUTPUT
-        echo "AWS Account ID: $ACCOUNT_ID"
-
-  validate-destroy:
-    name: Validate Destroy Request
-    runs-on: ubuntu-latest
-    needs: get-aws-account-id
     
     steps:
     - name: Check confirmation
       run: |
         if [ "${{ github.event.inputs.confirm_destroy }}" != "DESTROY" ]; then
-          echo "❌ Destruction not confirmed. Please type 'DESTROY' to confirm."
+          echo "❌ Destruction not confirmed"
           exit 1
         fi
-        echo "✅ Destruction confirmed for environment: ${{ github.event.inputs.environment }}"
 
-  destroy-infrastructure:
-    name: Destroy Infrastructure
-    runs-on: ubuntu-latest
-    needs: [validate-destroy, get-aws-account-id]
-    environment: ${{ github.event.inputs.environment }}
-    outputs:
-      resource_count: ${{ steps.terraform-state.outputs.resource_count }}
-
-    steps:
     - name: Checkout code
       uses: actions/checkout@v4
 
@@ -75,95 +37,32 @@ jobs:
 
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v3
-      with:
-        terraform_version: 1.5.0
 
     - name: Terraform Init
       run: |
         cd terraform
         terraform init
 
-    - name: Update Terraform Variables for Destroy
+    - name: Update database credentials
       run: |
         cd terraform
-        # Update sensitive variables for destroy
         sed -i "s|db_username = \".*\"|db_username = \"${{ secrets.DB_USERNAME }}\"|" terraform.tfvars
         sed -i "s|db_password = \".*\"|db_password = \"${{ secrets.DB_PASSWORD }}\"|" terraform.tfvars
-        
-        echo "Updated terraform.tfvars with current values for destroy:"
-        cat terraform.tfvars
 
-    - name: Get Terraform State Info
-      id: terraform-state
+    - name: Terraform Destroy
       run: |
         cd terraform
-        RESOURCE_COUNT=$(terraform state list 2>/dev/null | wc -l || echo "0")
-        echo "resource_count=$RESOURCE_COUNT" >> $GITHUB_OUTPUT
-        echo "Current resource count: $RESOURCE_COUNT"
+        terraform destroy -auto-approve
 
-    - name: Destroy Infrastructure
+    - name: Cleanup ECR images
       run: |
-        cd terraform
-        terraform destroy -auto-approve -var-file="terraform.tfvars"
-
-    - name: Clean up ECR Images
-      run: |
-        # Clean up frontend images
-        echo "Cleaning up ECR images for frontend..."
-        aws ecr list-images \
-          --repository-name ${{ env.PROJECT_NAME }}-frontend \
-          --region ${{ env.AWS_REGION }} \
-          --query 'imageIds[?imageTag!=`latest`]' \
-          --output text | \
+        # Clean up old images (keep only latest)
+        aws ecr list-images --repository-name ${{ env.PROJECT_NAME }}-frontend --query 'imageIds[?imageTag!=`latest`]' --output text | \
         while read imageDigest; do
-          if [ -n "$imageDigest" ]; then
-            aws ecr batch-delete-image \
-              --repository-name ${{ env.PROJECT_NAME }}-frontend \
-              --image-ids imageDigest=$imageDigest \
-              --region ${{ env.AWS_REGION }}
-          fi
-        done || echo "No frontend images to delete or repository doesn't exist"
-
-        # Clean up backend images  
-        echo "Cleaning up ECR images for backend..."
-        aws ecr list-images \
-          --repository-name ${{ env.PROJECT_NAME }}-backend \
-          --region ${{ env.AWS_REGION }} \
-          --query 'imageIds[?imageTag!=`latest`]' \
-          --output text | \
-        while read imageDigest; do
-          if [ -n "$imageDigest" ]; then
-            aws ecr batch-delete-image \
-              --repository-name ${{ env.PROJECT_NAME }}-backend \
-              --image-ids imageDigest=$imageDigest \
-              --region ${{ env.AWS_REGION }}
-          fi
-        done || echo "No backend images to delete or repository doesn't exist"
-
-    - name: Notify Destruction Complete
-      run: |
-        echo "🗑️ Infrastructure destruction completed for environment: ${{ github.event.inputs.environment }}"
-        echo "Destroyed approximately ${{ steps.terraform-state.outputs.resource_count }} resources"
-
-  destroy-summary:
-    name: Destruction Summary
-    runs-on: ubuntu-latest
-    needs: destroy-infrastructure
-    if: always()
-
-    steps:
-    - name: Show Destruction Summary
-      run: |
-        echo "=== DESTRUCTION SUMMARY ==="
-        echo "Environment: ${{ github.event.inputs.environment }}"
-        echo "Repository: ${{ github.repository }}"
-        echo "Destroyed by: ${{ github.actor }}"
-        echo "Resources Destroyed: ${{ needs.destroy-infrastructure.outputs.resource_count }}"
-        echo "Status: ${{ needs.destroy-infrastructure.result }}"
+          aws ecr batch-delete-image --repository-name ${{ env.PROJECT_NAME }}-frontend --image-ids imageDigest=$imageDigest
+        done || true
         
-        if [ "${{ needs.destroy-infrastructure.result }}" == "success" ]; then
-          echo "✅ Infrastructure destruction completed successfully!"
-        else
-          echo "❌ Infrastructure destruction failed!"
-          echo "Please check the workflow logs for details."
-        fi
+        aws ecr list-images --repository-name ${{ env.PROJECT_NAME }}-backend --query 'imageIds[?imageTag!=`latest`]' --output text | \
+        while read imageDigest; do
+          aws ecr batch-delete-image --repository-name ${{ env.PROJECT_NAME }}-backend --image-ids imageDigest=$imageDigest
+        done || true
