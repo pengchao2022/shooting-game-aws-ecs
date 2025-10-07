@@ -10,7 +10,7 @@ env:
 
 jobs:
   create-infrastructure:
-    name: Create Infrastructure
+    name: Terraform Create Infrastructure
     runs-on: ubuntu-latest
     
     steps:
