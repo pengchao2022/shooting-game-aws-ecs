@@ -99,11 +99,11 @@ resource "aws_ecs_task_definition" "frontend" {
   }
 }
 
-# Load Balancer - Backend
+# Load Balancer - Backend (修改为 Application Load Balancer)
 resource "aws_lb" "backend" {
   name               = "${var.project_name}-backend-lb"
   internal           = true
-  load_balancer_type = "network"
+  load_balancer_type = "application"  # 修改为 "application"
   subnets            = var.private_subnet_ids
 
   tags = {
@@ -111,7 +111,7 @@ resource "aws_lb" "backend" {
   }
 }
 
-# Load Balancer - Frontend
+# Load Balancer - Frontend (保持不变)
 resource "aws_lb" "frontend" {
   name               = "${var.project_name}-frontend-lb"
   internal           = false
@@ -124,17 +124,17 @@ resource "aws_lb" "frontend" {
   }
 }
 
-# Target Group - Backend
+# Target Group - Backend (修改协议为 HTTP)
 resource "aws_lb_target_group" "backend" {
   name        = "${var.project_name}-backend-tg"
   port        = 8000
-  protocol    = "HTTP" # 修改为 HTTP 协议
+  protocol    = "HTTP"  # 修改协议为 HTTP
   vpc_id      = var.vpc_id
   target_type = "ip"
 
   health_check {
     enabled             = true
-    protocol            = "HTTP"    # 使用 HTTP 协议
+    protocol            = "HTTP"    # 健康检查使用 HTTP 协议
     path                = "/health" # 假设后端应用提供 /health 路径
     interval            = 30
     timeout             = 10
@@ -147,7 +147,7 @@ resource "aws_lb_target_group" "backend" {
   }
 }
 
-# Target Group - Frontend
+# Target Group - Frontend (保持不变)
 resource "aws_lb_target_group" "frontend" {
   name        = "${var.project_name}-frontend-tg"
   port        = 80
@@ -165,10 +165,10 @@ resource "aws_lb_target_group" "frontend" {
   }
 }
 
-# Listener - Backend
+# Listener - Backend (修改协议为 HTTP)
 resource "aws_lb_listener" "backend" {
   load_balancer_arn = aws_lb.backend.arn
-  port              = "8000"
+  port              = "80"  # 使用 HTTP 协议的 80 端口
   protocol          = "HTTP"
 
   default_action {
@@ -177,7 +177,7 @@ resource "aws_lb_listener" "backend" {
   }
 }
 
-# Listener - Frontend
+# Listener - Frontend (保持不变)
 resource "aws_lb_listener" "frontend" {
   load_balancer_arn = aws_lb.frontend.arn
   port              = "80"
