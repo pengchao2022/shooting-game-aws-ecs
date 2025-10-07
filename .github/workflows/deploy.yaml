@@ -30,26 +30,6 @@ jobs:
         ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
         echo "account_id=$ACCOUNT_ID" >> $GITHUB_OUTPUT
 
-    - name: Setup ECR repositories
-      run: |
-        # Check if frontend ECR repository exists, if not, create it
-        FRONTEND_REPO_EXISTS=$(aws ecr describe-repositories --repository-names ${{ env.PROJECT_NAME }}-frontend --region ${{ env.AWS_REGION }} > /dev/null; echo $?)
-        if [ $FRONTEND_REPO_EXISTS -ne 0 ]; then
-          echo "Frontend ECR repository does not exist. Creating it..."
-          aws ecr create-repository --repository-name ${{ env.PROJECT_NAME }}-frontend --region ${{ env.AWS_REGION }}
-        else
-          echo "Frontend ECR repository already exists."
-        fi
-
-        # Check if backend ECR repository exists, if not, create it
-        BACKEND_REPO_EXISTS=$(aws ecr describe-repositories --repository-names ${{ env.PROJECT_NAME }}-backend --region ${{ env.AWS_REGION }} > /dev/null; echo $?)
-        if [ $BACKEND_REPO_EXISTS -ne 0 ]; then
-          echo "Backend ECR repository does not exist. Creating it..."
-          aws ecr create-repository --repository-name ${{ env.PROJECT_NAME }}-backend --region ${{ env.AWS_REGION }}
-        else
-          echo "Backend ECR repository already exists."
-        fi
-
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v3
 
@@ -61,7 +41,7 @@ jobs:
     - name: Update Terraform variables for infrastructure
       run: |
         cd terraform
-        # Update database credentials only for infrastructure creation
+        # Update database credentials
         sed -i "s|db_username = \".*\"|db_username = \"${{ secrets.DB_USERNAME }}\"|" terraform.tfvars
         sed -i "s|db_password = \".*\"|db_password = \"${{ secrets.DB_PASSWORD }}\"|" terraform.tfvars
         # Use dummy images for infrastructure creation
@@ -88,15 +68,6 @@ jobs:
         echo "frontend_service_name=$(terraform output -raw frontend_service_name)" >> $GITHUB_OUTPUT
         echo "backend_service_name=$(terraform output -raw backend_service_name)" >> $GITHUB_OUTPUT
 
-    - name: Upload infrastructure info
-      uses: actions/upload-artifact@v4
-      with:
-        name: infrastructure-info
-        path: |
-          terraform/.terraform
-          terraform/terraform.tfstate
-        retention-days: 1
-
   build-and-deploy:
     name: Build and Deploy to ECS
     runs-on: ubuntu-latest
@@ -106,12 +77,6 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Download infrastructure info
-      uses: actions/download-artifact@v4
-      with:
-        name: infrastructure-info
-        path: terraform
-
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
@@ -119,33 +84,51 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+
+    - name: Terraform Init
+      run: |
+        cd terraform
+        terraform init
+
+    - name: Get infrastructure outputs
+      id: get-outputs
+      run: |
+        cd terraform
+        echo "ecr_frontend_url=$(terraform output -raw ecr_frontend_repository_url)" >> $GITHUB_OUTPUT
+        echo "ecr_backend_url=$(terraform output -raw ecr_backend_repository_url)" >> $GITHUB_OUTPUT
+        echo "ecs_cluster_name=$(terraform output -raw ecs_cluster_name)" >> $GITHUB_OUTPUT
+        echo "frontend_service_name=$(terraform output -raw frontend_service_name)" >> $GITHUB_OUTPUT
+        echo "backend_service_name=$(terraform output -raw backend_service_name)" >> $GITHUB_OUTPUT
+
     - name: Login to ECR
       uses: aws-actions/amazon-ecr-login@v2
 
     - name: Build and push frontend image
       run: |
         cd frontend
-        docker build -t ${{ needs.create-infrastructure.outputs.ecr_frontend_url }}:${{ github.sha }} .
-        docker push ${{ needs.create-infrastructure.outputs.ecr_frontend_url }}:${{ github.sha }}
+        docker build -t ${{ steps.get-outputs.outputs.ecr_frontend_url }}:${{ github.sha }} .
+        docker push ${{ steps.get-outputs.outputs.ecr_frontend_url }}:${{ github.sha }}
 
     - name: Build and push backend image
       run: |
         cd backend
-        docker build -t ${{ needs.create-infrastructure.outputs.ecr_backend_url }}:${{ github.sha }} .
-        docker push ${{ needs.create-infrastructure.outputs.ecr_backend_url }}:${{ github.sha }}
+        docker build -t ${{ steps.get-outputs.outputs.ecr_backend_url }}:${{ github.sha }} .
+        docker push ${{ steps.get-outputs.outputs.ecr_backend_url }}:${{ github.sha }}
 
     - name: Update ECS services with new images
       run: |
         # Update frontend service
         aws ecs update-service \
-          --cluster ${{ needs.create-infrastructure.outputs.ecs_cluster_name }} \
-          --service ${{ needs.create-infrastructure.outputs.frontend_service_name }} \
+          --cluster ${{ steps.get-outputs.outputs.ecs_cluster_name }} \
+          --service ${{ steps.get-outputs.outputs.frontend_service_name }} \
           --force-new-deployment
 
         # Update backend service
         aws ecs update-service \
-          --cluster ${{ needs.create-infrastructure.outputs.ecs_cluster_name }} \
-          --service ${{ needs.create-infrastructure.outputs.backend_service_name }} \
+          --cluster ${{ steps.get-outputs.outputs.ecs_cluster_name }} \
+          --service ${{ steps.get-outputs.outputs.backend_service_name }} \
           --force-new-deployment
 
     - name: Wait for services to stabilize
@@ -155,20 +138,19 @@ jobs:
         
         # Wait for frontend service
         aws ecs wait services-stable \
-          --cluster ${{ needs.create-infrastructure.outputs.ecs_cluster_name }} \
-          --service ${{ needs.create-infrastructure.outputs.frontend_service_name }} \
+          --cluster ${{ steps.get-outputs.outputs.ecs_cluster_name }} \
+          --service ${{ steps.get-outputs.outputs.frontend_service_name }} \
           --region ${{ env.AWS_REGION }} || echo "Frontend service stabilization check completed"
         
         # Wait for backend service
         aws ecs wait services-stable \
-          --cluster ${{ needs.create-infrastructure.outputs.ecs_cluster_name }} \
-          --service ${{ needs.create-infrastructure.outputs.backend_service_name }} \
+          --cluster ${{ steps.get-outputs.outputs.ecs_cluster_name }} \
+          --service ${{ steps.get-outputs.outputs.backend_service_name }} \
           --region ${{ env.AWS_REGION }} || echo "Backend service stabilization check completed"
 
     - name: Get application URLs
       run: |
         cd terraform
-        terraform init
         echo "🚀 Deployment completed!"
         echo "Frontend URL: $(terraform output -raw frontend_url)"
         echo "Backend URL: $(terraform output -raw backend_url)"
