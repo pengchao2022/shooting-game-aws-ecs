@@ -1,19 +1,19 @@
 output "vpc_id" {
-  value = aws_vpc.main.id
+  description = "VPC ID"
+  value       = aws_vpc.main.id
 }
 
 output "public_subnet_ids" {
-  value = aws_subnet.public[*].id
+  description = "List of public subnet IDs"
+  value       = aws_subnet.public[*].id
 }
 
 output "private_subnet_ids" {
-  value = aws_subnet.private[*].id
+  description = "List of private subnet IDs"
+  value       = aws_subnet.private[*].id
 }
 
-output "ecs_security_group_id" {
-  value = aws_security_group.ecs_sg.id
-}
-
-output "db_security_group_id" {
-  value = aws_security_group.db_sg.id
+output "nat_gateway_id" {
+  description = "NAT Gateway ID"
+  value       = aws_nat_gateway.main.id
 }

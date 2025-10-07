@@ -1,27 +1,35 @@
-output "vpc_id" {
-  value = module.vpc.vpc_id
+output "frontend_url" {
+  description = "URL of the frontend application"
+  value       = module.ecs.frontend_url
 }
 
-output "public_subnet_ids" {
-  value = module.vpc.public_subnet_ids
-}
-
-output "private_subnet_ids" {
-  value = module.vpc.private_subnet_ids
-}
-
-output "alb_dns_name" {
-  value = module.ecs.alb_dns_name
-}
-
-output "backend_ecr" {
-  value = module.ecr.backend_repo_url
-}
-
-output "frontend_ecr" {
-  value = module.ecr.frontend_repo_url
+output "backend_url" {
+  description = "URL of the backend API"
+  value       = module.ecs.backend_url
 }
 
 output "rds_endpoint" {
-  value = module.rds.db_endpoint
+  description = "RDS database endpoint"
+  value       = module.rds.db_endpoint
+  sensitive   = true
+}
+
+output "ecr_frontend_repository_url" {
+  description = "ECR repository URL for frontend"
+  value       = module.ecr.frontend_repository_url
+}
+
+output "ecr_backend_repository_url" {
+  description = "ECR repository URL for backend"
+  value       = module.ecr.backend_repository_url
+}
+
+output "vpc_id" {
+  description = "VPC ID"
+  value       = module.vpc.vpc_id
+}
+
+output "ecs_cluster_name" {
+  description = "ECS cluster name"
+  value       = module.ecs.ecs_cluster_name
 }

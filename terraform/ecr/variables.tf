@@ -1,2 +1,4 @@
-variable "repo_backend_name" { type = string }
-variable "repo_frontend_name" { type = string }
+variable "project_name" {
+  description = "Project name for resource tagging"
+  type        = string
+}

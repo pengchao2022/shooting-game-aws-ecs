@@ -1,168 +1,239 @@
-# ------------------------
-# ECS Cluster
-# ------------------------
-resource "aws_ecs_cluster" "main" {
-  name = var.cluster_name
+# CloudWatch Log Group
+resource "aws_cloudwatch_log_group" "main" {
+  name = "/ecs/${var.project_name}"
+
   tags = {
-    Name = var.cluster_name
+    Name = "${var.project_name}-logs"
   }
 }
 
-# ------------------------
-# ECS Task Execution Role
-# ------------------------
-resource "aws_iam_role" "ecs_task_execution_role" {
-  name = "${var.cluster_name}-ecs-task-exec-role"
+# ECS Cluster
+resource "aws_ecs_cluster" "main" {
+  name = "${var.project_name}-cluster"
 
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
+  setting {
+    name  = "containerInsights"
+    value = "enabled"
+  }
+
+  tags = {
+    Name = "${var.project_name}-cluster"
+  }
+}
+
+# Backend Task Definition
+resource "aws_ecs_task_definition" "backend" {
+  family                   = "${var.project_name}-backend"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  cpu                      = "256"
+  memory                   = "512"
+  execution_role_arn       = var.ecs_task_execution_role_arn
+
+  container_definitions = jsonencode([{
+    name  = "backend"
+    image = var.backend_image
+    portMappings = [{
+      containerPort = 8000
+      hostPort      = 8000
+    }]
+    environment = [
       {
-        Effect = "Allow"
-        Principal = {
-          Service = "ecs-tasks.amazonaws.com"
-        }
-        Action = "sts:AssumeRole"
+        name  = "DATABASE_URL"
+        value = "postgresql://${var.db_username}:${var.db_password}@${var.db_endpoint}/${var.db_name}"
+      },
+      {
+        name  = "SECRET_KEY"
+        value = "your-secret-key-change-in-production"
       }
     ]
-  })
-}
-
-resource "aws_iam_role_policy_attachment" "ecs_task_execution_role_policy" {
-  role       = aws_iam_role.ecs_task_execution_role.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
-}
-
-# ------------------------
-# Security Group for ECS Tasks
-# ------------------------
-resource "aws_security_group" "ecs_sg" {
-  vpc_id = var.vpc_id
-  name   = "${var.cluster_name}-ecs-sg"
-
-  ingress {
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  ingress {
-    from_port   = 3000
-    to_port     = 3000
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        awslogs-group         = aws_cloudwatch_log_group.main.name
+        awslogs-region        = var.aws_region
+        awslogs-stream-prefix = "backend"
+      }
+    }
+  }])
 
   tags = {
-    Name = "${var.cluster_name}-ecs-sg"
+    Name = "${var.project_name}-backend-task"
   }
 }
 
-# ------------------------
-# Application Load Balancer (ALB)
-# ------------------------
-resource "aws_lb" "app_lb" {
-  name               = "${var.cluster_name}-alb"
+# Frontend Task Definition
+resource "aws_ecs_task_definition" "frontend" {
+  family                   = "${var.project_name}-frontend"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  cpu                      = "256"
+  memory                   = "512"
+  execution_role_arn       = var.ecs_task_execution_role_arn
+
+  container_definitions = jsonencode([{
+    name  = "frontend"
+    image = var.frontend_image
+    portMappings = [{
+      containerPort = 80
+      hostPort      = 80
+    }]
+    environment = [
+      {
+        name  = "REACT_APP_API_URL"
+        value = "http://${aws_lb.backend.dns_name}:8000"
+      }
+    ]
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        awslogs-group         = aws_cloudwatch_log_group.main.name
+        awslogs-region        = var.aws_region
+        awslogs-stream-prefix = "frontend"
+      }
+    }
+  }])
+
+  tags = {
+    Name = "${var.project_name}-frontend-task"
+  }
+}
+
+# Load Balancer - Backend
+resource "aws_lb" "backend" {
+  name               = "${var.project_name}-backend-lb"
+  internal           = true
+  load_balancer_type = "network"
+  subnets            = var.private_subnet_ids
+
+  tags = {
+    Name = "${var.project_name}-backend-lb"
+  }
+}
+
+# Load Balancer - Frontend
+resource "aws_lb" "frontend" {
+  name               = "${var.project_name}-frontend-lb"
+  internal           = false
   load_balancer_type = "application"
-  subnets            = var.public_subnets
-  security_groups    = [aws_security_group.ecs_sg.id]
+  security_groups    = [var.frontend_security_group_id]
+  subnets            = var.public_subnet_ids
+
   tags = {
-    Name = "${var.cluster_name}-alb"
+    Name = "${var.project_name}-frontend-lb"
   }
 }
 
-resource "aws_lb_target_group" "ecs_tg" {
-  name     = "${var.cluster_name}-tg"
-  port     = 3000
-  protocol = "HTTP"
-  vpc_id   = var.vpc_id
+# Target Group - Backend
+resource "aws_lb_target_group" "backend" {
+  name        = "${var.project_name}-backend-tg"
+  port        = 8000
+  protocol    = "TCP"
+  vpc_id      = var.vpc_id
+  target_type = "ip"
 
   health_check {
-    path                = "/"
-    healthy_threshold   = 2
-    unhealthy_threshold = 2
-    interval            = 30
-    matcher             = "200-399"
+    enabled  = true
+    protocol = "TCP"
   }
 
   tags = {
-    Name = "${var.cluster_name}-tg"
+    Name = "${var.project_name}-backend-tg"
   }
 }
 
-resource "aws_lb_listener" "ecs_listener" {
-  load_balancer_arn = aws_lb.app_lb.arn
+# Target Group - Frontend
+resource "aws_lb_target_group" "frontend" {
+  name        = "${var.project_name}-frontend-tg"
+  port        = 80
+  protocol    = "HTTP"
+  vpc_id      = var.vpc_id
+  target_type = "ip"
+
+  health_check {
+    enabled = true
+    path    = "/"
+  }
+
+  tags = {
+    Name = "${var.project_name}-frontend-tg"
+  }
+}
+
+# Listener - Backend
+resource "aws_lb_listener" "backend" {
+  load_balancer_arn = aws_lb.backend.arn
+  port              = "8000"
+  protocol          = "TCP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.backend.arn
+  }
+}
+
+# Listener - Frontend
+resource "aws_lb_listener" "frontend" {
+  load_balancer_arn = aws_lb.frontend.arn
   port              = "80"
   protocol          = "HTTP"
 
   default_action {
     type             = "forward"
-    target_group_arn = aws_lb_target_group.ecs_tg.arn
+    target_group_arn = aws_lb_target_group.frontend.arn
   }
 }
 
-# ------------------------
-# ECS Task Definition
-# ------------------------
-resource "aws_ecs_task_definition" "game_task" {
-  family                   = "${var.cluster_name}-task"
-  requires_compatibilities  = ["FARGATE"]
-  network_mode              = "awsvpc"
-  cpu                       = "256"
-  memory                    = "512"
-  execution_role_arn        = aws_iam_role.ecs_task_execution_role.arn
-
-  container_definitions = jsonencode([
-    {
-      name      = "node-shooter-game"
-      image     = "${var.ecr_repo_url}:latest"
-      essential = true
-      portMappings = [
-        { containerPort = 3000, hostPort = 3000 }
-      ]
-      environment = [
-        { name = "DB_HOST", value = var.db_endpoint },
-        { name = "DB_USER", value = var.db_username },
-        { name = "DB_PASS", value = var.db_password },
-        { name = "DB_NAME", value = var.db_name }
-      ]
-    }
-  ])
-
-  tags = {
-    Name = "${var.cluster_name}-task"
-  }
-}
-
-# ------------------------
-# ECS Service
-# ------------------------
-resource "aws_ecs_service" "game_service" {
-  name            = "${var.cluster_name}-service"
+# ECS Service - Backend
+resource "aws_ecs_service" "backend" {
+  name            = "${var.project_name}-backend"
   cluster         = aws_ecs_cluster.main.id
-  task_definition = aws_ecs_task_definition.game_task.arn
+  task_definition = aws_ecs_task_definition.backend.arn
   desired_count   = 1
   launch_type     = "FARGATE"
 
   network_configuration {
-    subnets          = var.private_subnets
-    security_groups  = [aws_security_group.ecs_sg.id]
+    subnets          = var.private_subnet_ids
+    security_groups  = [var.backend_security_group_id]
     assign_public_ip = false
   }
 
   load_balancer {
-    target_group_arn = aws_lb_target_group.ecs_tg.arn
-    container_name   = "node-shooter-game"
-    container_port   = 3000
+    target_group_arn = aws_lb_target_group.backend.arn
+    container_name   = "backend"
+    container_port   = 8000
   }
 
-  depends_on = [aws_lb_listener.ecs_listener]
+  depends_on = [aws_lb_listener.backend]
+
+  tags = {
+    Name = "${var.project_name}-backend-service"
+  }
+}
+
+# ECS Service - Frontend
+resource "aws_ecs_service" "frontend" {
+  name            = "${var.project_name}-frontend"
+  cluster         = aws_ecs_cluster.main.id
+  task_definition = aws_ecs_task_definition.frontend.arn
+  desired_count   = 1
+  launch_type     = "FARGATE"
+
+  network_configuration {
+    subnets          = var.public_subnet_ids
+    security_groups  = [var.frontend_security_group_id]
+    assign_public_ip = true
+  }
+
+  load_balancer {
+    target_group_arn = aws_lb_target_group.frontend.arn
+    container_name   = "frontend"
+    container_port   = 80
+  }
+
+  depends_on = [aws_lb_listener.frontend]
+
+  tags = {
+    Name = "${var.project_name}-frontend-service"
+  }
 }

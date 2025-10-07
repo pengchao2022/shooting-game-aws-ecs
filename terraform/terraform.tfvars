@@ -1,24 +1,14 @@
-aws_region = "us-east-1"
+# Terraform variables for Shooting Game project
+aws_region   = "us-east-1"
 project_name = "shooting-game"
+vpc_cidr     = "10.0.0.0/16"
 
-# VPC and subnets
-vpc_cidr = "10.10.0.0/16"
+public_subnet_cidrs  = ["10.0.1.0/24", "10.0.2.0/24"]
+private_subnet_cidrs = ["10.0.3.0/24", "10.0.4.0/24"]
 
-public_subnet_cidrs = [
-  "10.10.1.0/24",
-  "10.10.2.0/24"
-]
-
-private_subnet_cidrs = [
-  "10.10.101.0/24",
-  "10.10.102.0/24"
-]
-
-# RDS
-db_name     = "gamedb"
 db_username = "gameadmin"
 db_password = "game_1234"
+db_name     = "shootinggame"
 
-# ECR names (optional override)
-ecr_backend_name  = "shooting-game-backend"
-ecr_frontend_name = "shooting-game-frontend"
+frontend_image = "dummy-frontend-image"
+backend_image  = "dummy-backend-image"
