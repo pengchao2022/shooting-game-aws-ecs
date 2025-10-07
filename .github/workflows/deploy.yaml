@@ -9,7 +9,7 @@ env:
   PROJECT_NAME: shooting-game
 
 jobs:
-  create-infrastructure:
+  terraform-infrastructure:
     name: Terraform Create Infrastructure
     runs-on: ubuntu-latest
     
@@ -24,12 +24,6 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
-    - name: Get AWS Account ID
-      id: get-account-id
-      run: |
-        ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-        echo "account_id=$ACCOUNT_ID" >> $GITHUB_OUTPUT
-
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v3
 
@@ -38,37 +32,22 @@ jobs:
         cd terraform
         terraform init
 
-    - name: Build and push initial images
-      run: |
-        # Login to ECR
-        aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ steps.get-account-id.outputs.account_id }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
-        
-        # Build and push frontend image
-        cd frontend
-        docker build -t ${{ steps.get-account-id.outputs.account_id }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.PROJECT_NAME }}-frontend:initial .
-        docker push ${{ steps.get-account-id.outputs.account_id }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.PROJECT_NAME }}-frontend:initial
-        
-        # Build and push backend image
-        cd ../backend
-        docker build -t ${{ steps.get-account-id.outputs.account_id }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.PROJECT_NAME }}-backend:initial .
-        docker push ${{ steps.get-account-id.outputs.account_id }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.PROJECT_NAME }}-backend:initial
-
-    - name: Update Terraform variables for infrastructure
+    - name: Update Terraform variables
       run: |
         cd terraform
         # Update database credentials
         sed -i "s|db_username = \".*\"|db_username = \"${{ secrets.DB_USERNAME }}\"|" terraform.tfvars
         sed -i "s|db_password = \".*\"|db_password = \"${{ secrets.DB_PASSWORD }}\"|" terraform.tfvars
-        # Use REAL images for infrastructure creation
-        sed -i "s|frontend_image = \".*\"|frontend_image = \"${{ steps.get-account-id.outputs.account_id }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.PROJECT_NAME }}-frontend:initial\"|" terraform.tfvars
-        sed -i "s|backend_image = \".*\"|backend_image = \"${{ steps.get-account-id.outputs.account_id }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.PROJECT_NAME }}-backend:initial\"|" terraform.tfvars
+        # Use dummy images for initial infrastructure creation
+        sed -i "s|frontend_image = \".*\"|frontend_image = \"nginx:alpine\"|" terraform.tfvars
+        sed -i "s|backend_image = \".*\"|backend_image = \"nginx:alpine\"|" terraform.tfvars
 
     - name: Terraform Plan
       run: |
         cd terraform
         terraform plan -out=tfplan
 
-    - name: Terraform Apply Infrastructure
+    - name: Terraform Apply
       run: |
         cd terraform
         terraform apply -auto-approve tfplan
@@ -82,11 +61,13 @@ jobs:
         echo "ecs_cluster_name=$(terraform output -raw ecs_cluster_name)" >> $GITHUB_OUTPUT
         echo "frontend_service_name=$(terraform output -raw frontend_service_name)" >> $GITHUB_OUTPUT
         echo "backend_service_name=$(terraform output -raw backend_service_name)" >> $GITHUB_OUTPUT
+        echo "frontend_url=$(terraform output -raw frontend_url)" >> $GITHUB_OUTPUT
+        echo "backend_url=$(terraform output -raw backend_url)" >> $GITHUB_OUTPUT
 
-  build-and-deploy:
-    name: Build and Deploy to ECS
+  deploy-applications:
+    name: Deploy Applications to ECS
     runs-on: ubuntu-latest
-    needs: create-infrastructure
+    needs: terraform-infrastructure
     
     steps:
     - name: Checkout code
@@ -99,51 +80,33 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
 
-    - name: Setup Terraform
-      uses: hashicorp/setup-terraform@v3
-
-    - name: Terraform Init
-      run: |
-        cd terraform
-        terraform init
-
-    - name: Get infrastructure outputs
-      id: get-outputs
-      run: |
-        cd terraform
-        echo "ecr_frontend_url=$(terraform output -raw ecr_frontend_repository_url)" >> $GITHUB_OUTPUT
-        echo "ecr_backend_url=$(terraform output -raw ecr_backend_repository_url)" >> $GITHUB_OUTPUT
-        echo "ecs_cluster_name=$(terraform output -raw ecs_cluster_name)" >> $GITHUB_OUTPUT
-        echo "frontend_service_name=$(terraform output -raw frontend_service_name)" >> $GITHUB_OUTPUT
-        echo "backend_service_name=$(terraform output -raw backend_service_name)" >> $GITHUB_OUTPUT
-
     - name: Login to ECR
       uses: aws-actions/amazon-ecr-login@v2
 
     - name: Build and push frontend image
       run: |
         cd frontend
-        docker build -t ${{ steps.get-outputs.outputs.ecr_frontend_url }}:${{ github.sha }} .
-        docker push ${{ steps.get-outputs.outputs.ecr_frontend_url }}:${{ github.sha }}
+        docker build -t ${{ needs.terraform-infrastructure.outputs.ecr_frontend_url }}:${{ github.sha }} .
+        docker push ${{ needs.terraform-infrastructure.outputs.ecr_frontend_url }}:${{ github.sha }}
 
     - name: Build and push backend image
       run: |
         cd backend
-        docker build -t ${{ steps.get-outputs.outputs.ecr_backend_url }}:${{ github.sha }} .
-        docker push ${{ steps.get-outputs.outputs.ecr_backend_url }}:${{ github.sha }}
+        docker build -t ${{ needs.terraform-infrastructure.outputs.ecr_backend_url }}:${{ github.sha }} .
+        docker push ${{ needs.terraform-infrastructure.outputs.ecr_backend_url }}:${{ github.sha }}
 
     - name: Update ECS services with new images
       run: |
         # Update frontend service
         aws ecs update-service \
-          --cluster ${{ steps.get-outputs.outputs.ecs_cluster_name }} \
-          --service ${{ steps.get-outputs.outputs.frontend_service_name }} \
+          --cluster ${{ needs.terraform-infrastructure.outputs.ecs_cluster_name }} \
+          --service ${{ needs.terraform-infrastructure.outputs.frontend_service_name }} \
           --force-new-deployment
 
         # Update backend service
         aws ecs update-service \
-          --cluster ${{ steps.get-outputs.outputs.ecs_cluster_name }} \
-          --service ${{ steps.get-outputs.outputs.backend_service_name }} \
+          --cluster ${{ needs.terraform-infrastructure.outputs.ecs_cluster_name }} \
+          --service ${{ needs.terraform-infrastructure.outputs.backend_service_name }} \
           --force-new-deployment
 
     - name: Wait for services to stabilize
@@ -153,19 +116,20 @@ jobs:
         
         # Wait for frontend service
         aws ecs wait services-stable \
-          --cluster ${{ steps.get-outputs.outputs.ecs_cluster_name }} \
-          --service ${{ steps.get-outputs.outputs.frontend_service_name }} \
+          --cluster ${{ needs.terraform-infrastructure.outputs.ecs_cluster_name }} \
+          --service ${{ needs.terraform-infrastructure.outputs.frontend_service_name }} \
           --region ${{ env.AWS_REGION }} || echo "Frontend service stabilization check completed"
         
         # Wait for backend service
         aws ecs wait services-stable \
-          --cluster ${{ steps.get-outputs.outputs.ecs_cluster_name }} \
-          --service ${{ steps.get-outputs.outputs.backend_service_name }} \
+          --cluster ${{ needs.terraform-infrastructure.outputs.ecs_cluster_name }} \
+          --service ${{ needs.terraform-infrastructure.outputs.backend_service_name }} \
           --region ${{ env.AWS_REGION }} || echo "Backend service stabilization check completed"
 
-    - name: Get application URLs
+    - name: Show deployment results
       run: |
-        cd terraform
-        echo "🚀 Deployment completed!"
-        echo "Frontend URL: $(terraform output -raw frontend_url)"
-        echo "Backend URL: $(terraform output -raw backend_url)"
+        echo "🚀 Deployment completed successfully!"
+        echo "Frontend URL: ${{ needs.terraform-infrastructure.outputs.frontend_url }}"
+        echo "Backend URL: ${{ needs.terraform-infrastructure.outputs.backend_url }}"
+        echo "Frontend ECR: ${{ needs.terraform-infrastructure.outputs.ecr_frontend_url }}"
+        echo "Backend ECR: ${{ needs.terraform-infrastructure.outputs.ecr_backend_url }}"
