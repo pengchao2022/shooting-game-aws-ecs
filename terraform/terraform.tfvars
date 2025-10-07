@@ -9,5 +9,5 @@ db_username = "gameadmin"
 db_password = "game_1234"
 db_name     = "shootinggame"
 
-frontend_image = "dummy-frontend-image"
-backend_image  = "dummy-backend-image"
+frontend_image = "319998871902.dkr.ecr.us-east-1.amazonaws.com/shooting-game-frontend:latest"
+backend_image  = "319998871902.dkr.ecr.us-east-1.amazonaws.com/shooting-game-backend:latest"
