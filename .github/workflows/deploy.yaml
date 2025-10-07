@@ -38,15 +38,30 @@ jobs:
         cd terraform
         terraform init
 
+    - name: Build and push initial images
+      run: |
+        # Login to ECR
+        aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ steps.get-account-id.outputs.account_id }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+        
+        # Build and push frontend image
+        cd frontend
+        docker build -t ${{ steps.get-account-id.outputs.account_id }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.PROJECT_NAME }}-frontend:initial .
+        docker push ${{ steps.get-account-id.outputs.account_id }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.PROJECT_NAME }}-frontend:initial
+        
+        # Build and push backend image
+        cd ../backend
+        docker build -t ${{ steps.get-account-id.outputs.account_id }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.PROJECT_NAME }}-backend:initial .
+        docker push ${{ steps.get-account-id.outputs.account_id }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.PROJECT_NAME }}-backend:initial
+
     - name: Update Terraform variables for infrastructure
       run: |
         cd terraform
         # Update database credentials
         sed -i "s|db_username = \".*\"|db_username = \"${{ secrets.DB_USERNAME }}\"|" terraform.tfvars
         sed -i "s|db_password = \".*\"|db_password = \"${{ secrets.DB_PASSWORD }}\"|" terraform.tfvars
-        # Use dummy images for infrastructure creation
-        sed -i "s|frontend_image = \".*\"|frontend_image = \"dummy-frontend-image\"|" terraform.tfvars
-        sed -i "s|backend_image = \".*\"|backend_image = \"dummy-backend-image\"|" terraform.tfvars
+        # Use REAL images for infrastructure creation
+        sed -i "s|frontend_image = \".*\"|frontend_image = \"${{ steps.get-account-id.outputs.account_id }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.PROJECT_NAME }}-frontend:initial\"|" terraform.tfvars
+        sed -i "s|backend_image = \".*\"|backend_image = \"${{ steps.get-account-id.outputs.account_id }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ env.PROJECT_NAME }}-backend:initial\"|" terraform.tfvars
 
     - name: Terraform Plan
       run: |
