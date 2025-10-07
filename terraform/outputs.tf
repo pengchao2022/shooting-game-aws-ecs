@@ -1,8 +1,3 @@
-output "frontend_url" {
-  description = "URL of the frontend application"
-  value       = module.ecs.frontend_url
-}
-
 output "backend_url" {
   description = "URL of the backend API"
   value       = module.ecs.backend_url
