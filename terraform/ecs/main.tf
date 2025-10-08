@@ -27,7 +27,7 @@ resource "aws_ecs_task_definition" "backend" {
   network_mode             = "awsvpc"
   requires_compatibilities = ["FARGATE"]
   cpu                      = "1024"
-  memory                   = "2"
+  memory                   = "2048"
   execution_role_arn       = var.ecs_task_execution_role_arn
 
   container_definitions = jsonencode([{
@@ -67,8 +67,8 @@ resource "aws_ecs_task_definition" "frontend" {
   family                   = "${var.project_name}-frontend"
   network_mode             = "awsvpc"
   requires_compatibilities = ["FARGATE"]
-  cpu                      = "1024"
-  memory                   = "2"
+  cpu                      = "256"
+  memory                   = "512"
   execution_role_arn       = var.ecs_task_execution_role_arn
 
   container_definitions = jsonencode([{
