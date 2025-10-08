@@ -26,7 +26,7 @@ resource "aws_ecs_task_definition" "backend" {
   family                   = "${var.project_name}-backend"
   network_mode             = "awsvpc"
   requires_compatibilities = ["FARGATE"]
-  cpu                      = "256"
+  cpu                      = "512"
   memory                   = "512"
   execution_role_arn       = var.ecs_task_execution_role_arn
 
@@ -67,7 +67,7 @@ resource "aws_ecs_task_definition" "frontend" {
   family                   = "${var.project_name}-frontend"
   network_mode             = "awsvpc"
   requires_compatibilities = ["FARGATE"]
-  cpu                      = "256"
+  cpu                      = "512"
   memory                   = "512"
   execution_role_arn       = var.ecs_task_execution_role_arn
 
@@ -194,7 +194,7 @@ resource "aws_ecs_service" "backend" {
   name            = "${var.project_name}-backend"
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.backend.arn
-  desired_count   = 1
+  desired_count   = 2
   launch_type     = "FARGATE"
 
   network_configuration {
