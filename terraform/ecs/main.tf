@@ -27,7 +27,7 @@ resource "aws_ecs_task_definition" "backend" {
   network_mode             = "awsvpc"
   requires_compatibilities = ["FARGATE"]
   cpu                      = "512"
-  memory                   = "512"
+  memory                   = "1"
   execution_role_arn       = var.ecs_task_execution_role_arn
 
   container_definitions = jsonencode([{
@@ -68,7 +68,7 @@ resource "aws_ecs_task_definition" "frontend" {
   network_mode             = "awsvpc"
   requires_compatibilities = ["FARGATE"]
   cpu                      = "512"
-  memory                   = "512"
+  memory                   = "1"
   execution_role_arn       = var.ecs_task_execution_role_arn
 
   container_definitions = jsonencode([{
