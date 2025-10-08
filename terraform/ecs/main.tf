@@ -36,6 +36,7 @@ resource "aws_ecs_task_definition" "backend" {
     portMappings = [{
       containerPort = 8000
       hostPort      = 8000
+      protocol      = "tcp" # 明确指定协议
     }]
     environment = [
       {
@@ -54,6 +55,14 @@ resource "aws_ecs_task_definition" "backend" {
         awslogs-region        = var.aws_region
         awslogs-stream-prefix = "backend"
       }
+    }
+    # 添加健康检查
+    healthCheck = {
+      command     = ["CMD-SHELL", "curl -f http://localhost:8000/ || exit 1"]
+      interval    = 30
+      timeout     = 10
+      retries     = 3
+      startPeriod = 60
     }
   }])
 
@@ -77,6 +86,7 @@ resource "aws_ecs_task_definition" "frontend" {
     portMappings = [{
       containerPort = 80
       hostPort      = 80
+      protocol      = "tcp" # 明确指定协议
     }]
     environment = [
       {
@@ -92,6 +102,14 @@ resource "aws_ecs_task_definition" "frontend" {
         awslogs-stream-prefix = "frontend"
       }
     }
+    # 添加健康检查
+    healthCheck = {
+      command     = ["CMD-SHELL", "curl -f http://localhost:80/ || exit 1"]
+      interval    = 30
+      timeout     = 10
+      retries     = 3
+      startPeriod = 60
+    }
   }])
 
   tags = {
@@ -103,15 +121,16 @@ resource "aws_ecs_task_definition" "frontend" {
 resource "aws_lb" "backend" {
   name               = "${var.project_name}-backend-lb"
   internal           = false
-  load_balancer_type = "application"  # 修改为 "application"
-  subnets            = var.private_subnet_ids
+  load_balancer_type = "application"
+  security_groups    = [var.backend_security_group_id] # 添加安全组
+  subnets            = var.public_subnet_ids           # 改为公有子网以便从外网访问
 
   tags = {
     Name = "${var.project_name}-backend-lb"
   }
 }
 
-# Load Balancer - Frontend (保持不变)
+# Load Balancer - Frontend
 resource "aws_lb" "frontend" {
   name               = "${var.project_name}-frontend-lb"
   internal           = false
@@ -124,30 +143,37 @@ resource "aws_lb" "frontend" {
   }
 }
 
-# Target Group - Backend (修改协议为 HTTP)
+# Target Group - Backend (新创建，避免配置冲突)
 resource "aws_lb_target_group" "backend" {
-  name        = "${var.project_name}-backend-tg"
+  name        = "${var.project_name}-backend-tg-new" # 新名称避免冲突
   port        = 8000
-  protocol    = "HTTP"  # 修改协议为 HTTP
+  protocol    = "HTTP"
   vpc_id      = var.vpc_id
   target_type = "ip"
 
   health_check {
     enabled             = true
-    protocol            = "HTTP"    # 健康检查使用 HTTP 协议
-    path                = "/" # 假设后端应用提供 /health 路径
-    interval            = 30
+    healthy_threshold   = 2
+    unhealthy_threshold = 5
     timeout             = 10
-    healthy_threshold   = 3
-    unhealthy_threshold = 3
+    interval            = 30
+    path                = "/" # 使用根路径
+    port                = "traffic-port"
+    protocol            = "HTTP"
+    matcher             = "200"
   }
 
   tags = {
     Name = "${var.project_name}-backend-tg"
   }
+
+  # 添加生命周期配置，确保在更新时先创建新的
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
-# Target Group - Frontend (保持不变)
+# Target Group - Frontend
 resource "aws_lb_target_group" "frontend" {
   name        = "${var.project_name}-frontend-tg"
   port        = 80
@@ -156,8 +182,15 @@ resource "aws_lb_target_group" "frontend" {
   target_type = "ip"
 
   health_check {
-    enabled = true
-    path    = "/"
+    enabled             = true
+    healthy_threshold   = 2
+    unhealthy_threshold = 5
+    timeout             = 10
+    interval            = 30
+    path                = "/"
+    port                = "traffic-port"
+    protocol            = "HTTP"
+    matcher             = "200"
   }
 
   tags = {
@@ -165,19 +198,23 @@ resource "aws_lb_target_group" "frontend" {
   }
 }
 
-# Listener - Backend (修改协议为 HTTP)
+# Listener - Backend
 resource "aws_lb_listener" "backend" {
   load_balancer_arn = aws_lb.backend.arn
-  port              = "80"  # 使用 HTTP 协议的 80 端口
+  port              = "80"
   protocol          = "HTTP"
 
   default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.backend.arn
   }
+
+  tags = {
+    Name = "${var.project_name}-backend-listener"
+  }
 }
 
-# Listener - Frontend (保持不变)
+# Listener - Frontend
 resource "aws_lb_listener" "frontend" {
   load_balancer_arn = aws_lb.frontend.arn
   port              = "80"
@@ -187,6 +224,10 @@ resource "aws_lb_listener" "frontend" {
     type             = "forward"
     target_group_arn = aws_lb_target_group.frontend.arn
   }
+
+  tags = {
+    Name = "${var.project_name}-frontend-listener"
+  }
 }
 
 # ECS Service - Backend
@@ -194,7 +235,7 @@ resource "aws_ecs_service" "backend" {
   name            = "${var.project_name}-backend"
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.backend.arn
-  desired_count   = 2
+  desired_count   = 1 # 先设置为1，稳定后再增加
   launch_type     = "FARGATE"
 
   network_configuration {
@@ -209,10 +250,28 @@ resource "aws_ecs_service" "backend" {
     container_port   = 8000
   }
 
+  # 添加健康检查宽限期
+  health_check_grace_period_seconds = 180
+
+  # 添加部署配置
+  deployment_controller {
+    type = "ECS"
+  }
+
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
+
   depends_on = [aws_lb_listener.backend]
 
   tags = {
     Name = "${var.project_name}-backend-service"
+  }
+
+  # 防止 Terraform 忽略负载均衡器变更
+  lifecycle {
+    ignore_changes = [desired_count]
   }
 }
 
@@ -236,9 +295,27 @@ resource "aws_ecs_service" "frontend" {
     container_port   = 80
   }
 
+  # 添加健康检查宽限期
+  health_check_grace_period_seconds = 120
+
+  # 添加部署配置
+  deployment_controller {
+    type = "ECS"
+  }
+
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
+
   depends_on = [aws_lb_listener.frontend]
 
   tags = {
     Name = "${var.project_name}-frontend-service"
+  }
+
+  # 防止 Terraform 忽略负载均衡器变更
+  lifecycle {
+    ignore_changes = [desired_count]
   }
 }
