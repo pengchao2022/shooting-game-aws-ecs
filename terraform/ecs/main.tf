@@ -135,7 +135,7 @@ resource "aws_lb_target_group" "backend" {
   health_check {
     enabled             = true
     protocol            = "HTTP"    # 健康检查使用 HTTP 协议
-    path                = "/health" # 假设后端应用提供 /health 路径
+    path                = "/" # 假设后端应用提供 /health 路径
     interval            = 30
     timeout             = 10
     healthy_threshold   = 3
