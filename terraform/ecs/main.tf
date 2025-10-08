@@ -102,7 +102,7 @@ resource "aws_ecs_task_definition" "frontend" {
 # Load Balancer - Backend (修改为 Application Load Balancer)
 resource "aws_lb" "backend" {
   name               = "${var.project_name}-backend-lb"
-  internal           = true
+  internal           = false
   load_balancer_type = "application"  # 修改为 "application"
   subnets            = var.private_subnet_ids
 
